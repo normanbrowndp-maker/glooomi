@@ -1,0 +1,12 @@
+node_modules/
+.cache/
+dist/
+.env
+.env.*
+!.env.example
+coverage/
+.terraform/
+*.tfstate*
+uploads/
+.neon
+*.tsbuildinfo
