@@ -62,6 +62,10 @@ variable "smtp_password_secret_arn" {
   type        = string
   description = "Secrets Manager ARN containing SMTP_PASSWORD"
 }
+variable "email_code_pepper_secret_arn" {
+  type        = string
+  description = "Secrets Manager ARN containing EMAIL_CODE_PEPPER"
+}
 variable "smtp_from" {
   type        = string
   description = "Verified Gmail mailbox address"

@@ -5,5 +5,6 @@ import { JwtModule } from '@nestjs/jwt';
 import { SocialController } from './social.controller';
 import { SocialService } from './social.service';
 import { MessagesGateway } from './messages.gateway';
-@Module({ imports: [JwtModule.register({})], controllers: [SocialController], providers: [PrismaService, JwtAuthGuard, SocialService, MessagesGateway] })
+import { MediaModule } from '../media/media.module';
+@Module({ imports: [JwtModule.register({}), MediaModule], controllers: [SocialController], providers: [PrismaService, JwtAuthGuard, SocialService, MessagesGateway] })
 export class SocialModule {}

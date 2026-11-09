@@ -10,13 +10,14 @@ function makeService() {
     user: { findUnique: vi.fn() },
     follow: { upsert: vi.fn(), findUnique: vi.fn(), deleteMany: vi.fn() },
   };
-  return { service: new SocialService(db as never), db };
+  const media = { readUrl: vi.fn().mockResolvedValue('https://signed.example/media'), attach: vi.fn() };
+  return { service: new SocialService(db as never, media as never), db, media };
 }
 
 describe('SocialService', () => {
   it('creates a like and notifies the post author', async () => {
     const { service, db } = makeService();
-    db.post.findUnique.mockResolvedValue({ id: 'post-1', authorId: 'author-1' });
+    db.post.findUnique.mockResolvedValue({ id: 'post-1', authorId: 'author-1', author: { profile: { visibility: 'PUBLIC' } } });
     db.like.findUnique.mockResolvedValue(null);
     db.like.count.mockResolvedValue(1);
 
@@ -27,7 +28,7 @@ describe('SocialService', () => {
 
   it('removes an existing like without creating another notification', async () => {
     const { service, db } = makeService();
-    db.post.findUnique.mockResolvedValue({ id: 'post-1', authorId: 'author-1' });
+    db.post.findUnique.mockResolvedValue({ id: 'post-1', authorId: 'author-1', author: { profile: { visibility: 'PUBLIC' } } });
     db.like.findUnique.mockResolvedValue({ userId: 'reader-1', postId: 'post-1' });
     db.like.count.mockResolvedValue(0);
 

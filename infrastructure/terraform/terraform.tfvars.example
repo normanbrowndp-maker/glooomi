@@ -9,4 +9,5 @@ jwt_access_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret
 jwt_refresh_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:gloomi/jwt-refresh-xxxxx"
 smtp_user_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:gloomi/smtp-user-xxxxx"
 smtp_password_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:gloomi/smtp-password-xxxxx"
+email_code_pepper_secret_arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:gloomi/email-code-pepper-xxxxx"
 smtp_from = "your.verified.address@gmail.com"

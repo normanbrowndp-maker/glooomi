@@ -21,6 +21,37 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gloomi_test
+      POSTGRES_PASSWORD: gloomi_test
+      POSTGRES_DB: gloomi_test
+    ports: ["5433:5432"]
+    volumes: ["postgres_test_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gloomi_test -d gloomi_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  postgres-migration-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gloomi_test
+      POSTGRES_PASSWORD: gloomi_test
+      POSTGRES_DB: gloomi_migration_test
+    ports: ["5434:5432"]
+    volumes: ["postgres_migration_test_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gloomi_test -d gloomi_migration_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  mailpit:
+    image: axllent/mailpit:v1.22
+    ports: ["1025:1025", "8025:8025"]
 volumes:
   postgres_data:
+  postgres_test_data:
+  postgres_migration_test_data:
   redis_data:

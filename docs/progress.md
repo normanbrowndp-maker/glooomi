@@ -1,30 +1,49 @@
 # Development progress
 
-Updated 2026-11-06.
+Updated 2026-11-09.
 
-## Product foundation
+## Phase 3 implementation status
 
-- Started from an empty repository and implemented the gloomi mobile-first social product from the supplied Russian prompt and Figma feed reference (`4:19659`, 390 × 844).
-- Workspace contains a React/Vite client, NestJS API, PostgreSQL/Prisma data model, Neon connection configuration, environment template, and AWS Terraform template.
-- Implemented registration, login, email verification, refresh/logout, profiles and privacy setting, follow requests, feed/discovery, image/video posts, likes, saved posts, comments, stories, notifications, conversations, persisted REST messaging, Socket.IO message events, and bounded multipart S3 uploads.
-- Frontend includes auth, feed, post/story creation and story view, search/discovery, profile editing/following, save/like/comment actions, notifications, and conversations.
-- Gmail delivery needs a configured Gmail App Password. No email credentials are included, so delivery has not been verified.
+Phase 3 is implemented locally and prepared for integration. No live Neon or AWS credentials were used, so external connectivity and deployed behavior remain unverified.
 
-## AWS preparation
+- Neon is the intended managed PostgreSQL provider. Runtime Prisma uses `DATABASE_URL`; Prisma CLI reads `DIRECT_URL` first and falls back to `DATABASE_URL` through `prisma.config.ts`. Docker PostgreSQL remains the local and integration-test option. No database was connected or migrated in this phase.
+- Private S3 media lifecycle is implemented for image and short-video uploads: authenticated intent, exact-key presigned POST, owner-bound database record, finalize-time size/content-type/signature checks, purpose-bound attachment, short-lived signed GET, owner avatar update, deletion of unattached media, and cleanup of abandoned uploads.
+- Posts, stories, and profile avatars now reference `MediaAsset` records. The older `mediaUrl` fields remain for compatibility with existing rows; new writes use media IDs. New keys are under `private-media/`, outside the legacy CloudFront-readable `users/` prefix.
+- The browser uploads directly to S3 without sending API credentials to S3, then finalizes through the API. Existing image and video display paths use signed URLs.
+- Phase 1/2 authentication, Redis rate limits, encrypted transactional email outbox, and separate BullMQ worker remain in place.
+- Migration `0004_private_media` adds nullable relations and media metadata without deleting existing content. It has not been applied to any database.
 
-- Terraform defines a VPC, private RDS PostgreSQL, encrypted Redis replication group, private/versioned/encrypted media bucket with CloudFront OAC, ECR, ECS Fargate API, HTTPS ALB, CloudWatch, and IAM roles.
-- IAM Policy Autopilot reviewed API S3 upload and Secrets Manager access. The task role applies the generated actions with Terraform resource ARNs narrowed to the application bucket prefix and RDS managed secret.
-- Infrastructure is code only. No AWS resources were created and no paid deployment was attempted.
+## Validation on 2026-11-09
 
-## Validation completed
+| Check | Result |
+|---|---|
+| `pnpm typecheck` | PASS |
+| `pnpm test` | PASS: 21 unit tests; 11 integration tests skipped |
+| API build | PASS |
+| Web build | PASS |
+| Worker build | PASS |
+| Prisma Client generation | PASS |
+| Prisma schema validation | PASS with a temporary localhost placeholder URL |
+| Migration integration harness | SKIP: required isolated test DB URLs were not configured |
+| `git diff --check` | PASS |
+| Docker-backed integration | SKIP: Docker CLI unavailable |
+| Terraform validation | SKIP: Terraform CLI unavailable |
 
-- Prisma schema formatted, validated, and generated; `prisma/migrations/0001_init/migration.sql` regenerated from the current schema.
-- API and web TypeScript checks pass.
-- API unit tests pass: 4 tests in `social.service.spec.ts`.
-- API Nest build and web production Vite build pass.
+No migration was applied. No Neon/AWS resources were created or accessed, no production database was connected, and no deployment or Terraform apply was run. The user-owned `.env.example` deletion and `.env` were left untouched.
 
-## Remaining verification and product work
+## Remaining work
 
-- A Neon-backed runtime smoke test is pending Neon connection strings in `.env`. Terraform CLI is also unavailable, so Terraform formatting, validation, and plan remain unverified.
-- No AWS deployment, Gmail delivery, or end-to-end browser session has been run.
-- Remaining product work includes password reset, follow-request approval, moderation/reporting, rate limiting and hardened refresh-token rotation, media transcoding, browser push, a dedicated saved-post screen, and static web hosting/deployment.
+### Before a live demonstration
+
+- Configure an approved Neon database URL locally and apply migrations only to that intended database.
+- Configure an S3 bucket and least-privilege runtime credentials after reviewing cost and approving provisioning; then validate upload, finalize, signed delivery, and deletion end to end.
+- Run local PostgreSQL/Redis integration tests with Docker and test auth, outbox recovery, and media flows against real services.
+- Set cookie/CORS values for the actual demo origins and validate browser login/refresh/logout.
+
+### Recommended follow-up
+
+- Add multipart upload for large videos, media decode/scan, asynchronous FFmpeg thumbnails/transcoding, and media delivery range/egress strategy.
+- Add social/media authorization integration tests, browser tests, and production worker deployment/monitoring configuration.
+- Treat the existing RDS/CloudFront Terraform stack as legacy, cost-bearing infrastructure. Review and redesign it before any use with Neon; do not apply it as-is for this architecture.
+
+See [architecture](architecture.md), [security](security.md), [roadmap](roadmap.md), and [audit](audit.md).

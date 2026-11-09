@@ -5,7 +5,6 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
 }
 
 enum Visibility {
@@ -16,6 +15,20 @@ enum Visibility {
 enum MediaType {
   IMAGE
   VIDEO
+}
+
+enum MediaStatus {
+  PENDING
+  READY
+  ATTACHED
+  FAILED
+  DELETED
+}
+
+enum MediaPurpose {
+  POST
+  STORY
+  AVATAR
 }
 
 enum NotificationType {
@@ -29,6 +42,18 @@ enum NotificationType {
 enum VerificationPurpose {
   VERIFY
   RESET_PASSWORD
+}
+
+enum EmailOutboxKind {
+  VERIFY_EMAIL
+  RESET_PASSWORD
+}
+
+enum EmailOutboxStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
 }
 
 model User {
@@ -50,42 +75,98 @@ model User {
   actorEvents             Notification[]       @relation("actor")
   stories                 Story[]
   verificationCodes       VerificationCode[]
+  emailOutbox             EmailOutbox[]
   conversationMemberships ConversationMember[]
   savedPosts              SavedPost[]
+  mediaAssets             MediaAsset[]         @relation("MediaOwner")
 }
 
 model VerificationCode {
-  id        String              @id @default(cuid())
-  userId    String
-  purpose   VerificationPurpose
-  codeHash  String
-  expiresAt DateTime
-  createdAt DateTime            @default(now())
-  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String              @id @default(cuid())
+  userId        String
+  purpose       VerificationPurpose
+  codeHash      String
+  attempts      Int                 @default(0)
+  invalidatedAt DateTime?
+  expiresAt     DateTime
+  createdAt     DateTime            @default(now())
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, purpose, expiresAt])
 }
 
 model Profile {
-  id          String     @id @default(cuid())
-  userId      String     @unique
-  displayName String     @default("")
-  bio         String     @default("")
-  avatarUrl   String?
-  website     String?
-  visibility  Visibility @default(PUBLIC)
-  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String      @id @default(cuid())
+  userId        String      @unique
+  displayName   String      @default("")
+  bio           String      @default("")
+  avatarUrl     String?
+  avatarMediaId String?     @unique
+  website       String?
+  visibility    Visibility  @default(PUBLIC)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  avatarMedia   MediaAsset? @relation("ProfileAvatar", fields: [avatarMediaId], references: [id], onDelete: SetNull)
+}
+
+model MediaAsset {
+  id          String       @id @default(cuid())
+  ownerId     String
+  objectKey   String       @unique
+  mediaType   MediaType
+  purpose     MediaPurpose
+  contentType String
+  sizeBytes   Int
+  status      MediaStatus  @default(PENDING)
+  uploadUntil DateTime
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  owner       User         @relation("MediaOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  post        Post?        @relation("PostMedia")
+  story       Story?       @relation("StoryMedia")
+  profile     Profile?     @relation("ProfileAvatar")
+
+  @@index([ownerId, status, createdAt(sort: Desc)])
+  @@index([status, uploadUntil])
 }
 
 model Session {
-  id               String   @id @default(cuid())
-  userId           String
-  refreshTokenHash String
-  expiresAt        DateTime
-  createdAt        DateTime @default(now())
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                       String    @id @default(cuid())
+  userId                   String
+  refreshTokenHash         String
+  previousRefreshTokenHash String?
+  refreshTokenCiphertext   String?
+  refreshTokenIv           String?
+  refreshTokenTag          String?
+  rotatedAt                DateTime?
+  expiresAt                DateTime
+  createdAt                DateTime  @default(now())
+  user                     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt])
+}
+
+model EmailOutbox {
+  id                String            @id @default(cuid())
+  userId            String
+  kind              EmailOutboxKind
+  status            EmailOutboxStatus @default(PENDING)
+  jobId             String            @unique
+  payloadCiphertext String
+  payloadIv         String
+  payloadTag        String
+  attempts          Int               @default(0)
+  dispatchAttempts  Int               @default(0)
+  availableAt       DateTime          @default(now())
+  lockedAt          DateTime?
+  lastError         String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  sentAt            DateTime?
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt, createdAt])
+  @@index([status, lockedAt])
+  @@index([userId, kind, createdAt(sort: Desc)])
 }
 
 model Follow {
@@ -101,17 +182,19 @@ model Follow {
 }
 
 model Post {
-  id        String      @id @default(cuid())
-  authorId  String
-  caption   String      @default("")
-  mediaUrl  String
-  mediaType MediaType   @default(IMAGE)
-  location  String?
-  createdAt DateTime    @default(now())
-  author    User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  likes     Like[]
-  comments  Comment[]
-  savedBy   SavedPost[]
+  id           String      @id @default(cuid())
+  authorId     String
+  caption      String      @default("")
+  mediaUrl     String
+  mediaType    MediaType   @default(IMAGE)
+  mediaAssetId String?     @unique
+  location     String?
+  createdAt    DateTime    @default(now())
+  author       User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  mediaAsset   MediaAsset? @relation("PostMedia", fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  likes        Like[]
+  comments     Comment[]
+  savedBy      SavedPost[]
 
   @@index([authorId, createdAt(sort: Desc)])
   @@index([createdAt(sort: Desc)])
@@ -151,13 +234,15 @@ model Comment {
 }
 
 model Story {
-  id        String   @id @default(cuid())
-  userId    String
-  mediaUrl  String
-  caption   String   @default("")
-  createdAt DateTime @default(now())
-  expiresAt DateTime
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id           String      @id @default(cuid())
+  userId       String
+  mediaUrl     String
+  mediaAssetId String?     @unique
+  caption      String      @default("")
+  createdAt    DateTime    @default(now())
+  expiresAt    DateTime
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mediaAsset   MediaAsset? @relation("StoryMedia", fields: [mediaAssetId], references: [id], onDelete: SetNull)
 
   @@index([expiresAt])
 }

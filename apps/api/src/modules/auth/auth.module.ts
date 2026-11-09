@@ -4,6 +4,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { PrismaService } from '../database/prisma.service';
-import { MailService } from '../mail/mail.service';
-@Module({ imports: [JwtModule.register({})], controllers: [AuthController], providers: [AuthService, JwtAuthGuard, PrismaService, MailService], exports: [AuthService, JwtAuthGuard] })
+import { RateLimitModule } from './rate-limit.module';
+import { MediaModule } from '../media/media.module';
+@Module({ imports: [JwtModule.register({}), RateLimitModule, MediaModule], controllers: [AuthController], providers: [AuthService, JwtAuthGuard, PrismaService], exports: [AuthService, JwtAuthGuard] })
 export class AuthModule {}

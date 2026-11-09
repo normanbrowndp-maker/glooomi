@@ -5,5 +5,7 @@ export class RegisterDto {
   @IsString() @MinLength(10) password!: string;
 }
 export class LoginDto { @IsEmail() email!: string; @IsString() password!: string; }
-export class VerifyDto { @IsEmail() email!: string; @IsString() @Length(6, 6) code!: string; }
+export class VerifyDto { @IsEmail() email!: string; @IsString() @Length(6, 6) @Matches(/^\d{6}$/) code!: string; }
 export class ResendDto { @IsEmail() email!: string; }
+export class PasswordResetDto { @IsEmail() email!: string; }
+export class PasswordResetConfirmDto extends VerifyDto { @IsString() @MinLength(10) password!: string; }

@@ -139,6 +139,15 @@ resource "aws_s3_bucket_versioning" "media" { bucket = aws_s3_bucket.media.id
    versioning_configuration { status = "Enabled" } }
 resource "aws_s3_bucket_server_side_encryption_configuration" "media" { bucket = aws_s3_bucket.media.id
    rule { apply_server_side_encryption_by_default { sse_algorithm = "AES256" } } }
+resource "aws_s3_bucket_lifecycle_configuration" "media" {
+  bucket = aws_s3_bucket.media.id
+  rule {
+    id = "abort-incomplete-multipart-uploads"
+    status = "Enabled"
+    filter { prefix = "private-media/" }
+    abort_incomplete_multipart_upload { days_after_initiation = 1 }
+  }
+}
 resource "aws_s3_bucket_cors_configuration" "media" {
   bucket = aws_s3_bucket.media.id
   cors_rule {
@@ -174,7 +183,9 @@ resource "aws_cloudfront_distribution" "media" {
 }
 resource "aws_s3_bucket_policy" "media" {
   bucket = aws_s3_bucket.media.id
-  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Sid = "AllowCloudFrontRead", Effect = "Allow", Principal = { Service = "cloudfront.amazonaws.com" }, Action = "s3:GetObject", Resource = "${aws_s3_bucket.media.arn}/*", Condition = { StringEquals = { "AWS:SourceArn" = aws_cloudfront_distribution.media.arn } } }] })
+  # The old `users/` prefix remains reachable through CloudFront for existing public URLs.
+  # New private uploads use `private-media/` and are never readable through this distribution.
+  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Sid = "AllowLegacyCloudFrontRead", Effect = "Allow", Principal = { Service = "cloudfront.amazonaws.com" }, Action = "s3:GetObject", Resource = "${aws_s3_bucket.media.arn}/users/*", Condition = { StringEquals = { "AWS:SourceArn" = aws_cloudfront_distribution.media.arn } } }] })
   depends_on = [aws_s3_bucket_public_access_block.media]
 }
 
@@ -199,7 +210,7 @@ resource "aws_iam_role_policy_attachment" "execution" {
 resource "aws_iam_role_policy" "execution_secrets" {
   name = "${local.name}-inject-secrets"
   role = aws_iam_role.execution.id
-  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = [var.jwt_access_secret_arn, var.jwt_refresh_secret_arn, var.smtp_user_secret_arn, var.smtp_password_secret_arn, aws_db_instance.main.master_user_secret[0].secret_arn] }] })
+  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = [var.jwt_access_secret_arn, var.jwt_refresh_secret_arn, var.smtp_user_secret_arn, var.smtp_password_secret_arn, var.email_code_pepper_secret_arn, aws_db_instance.main.master_user_secret[0].secret_arn] }] })
 }
 resource "aws_iam_role" "task" {
   name               = "${local.name}-task"
@@ -211,7 +222,7 @@ resource "aws_iam_role_policy" "task" {
   role = aws_iam_role.task.id
   # Actions were confirmed by IAM Policy Autopilot against main.ts and media.controller.ts.
   # Resource ARNs are narrowed here to the resources created by this stack.
-  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["s3:PutObject"], Resource = "${aws_s3_bucket.media.arn}/users/*" }, { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = aws_db_instance.main.master_user_secret[0].secret_arn }] })
+  policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource = "${aws_s3_bucket.media.arn}/private-media/*" }, { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = aws_db_instance.main.master_user_secret[0].secret_arn }] })
 }
 resource "aws_cloudwatch_log_group" "api" { name="/ecs/${local.name}/api"
    retention_in_days=30
@@ -247,7 +258,7 @@ resource "aws_ecs_task_definition" "api" {
    memory=var.api_memory
   execution_role_arn=aws_iam_role.execution.arn
    task_role_arn=aws_iam_role.task.arn
-  container_definitions=jsonencode([{name="api",image=var.api_image,essential=true,portMappings=[{containerPort=3000,protocol="tcp"}],environment=[{name="NODE_ENV",value="production"},{name="WEB_ORIGIN",value=var.web_origin},{name="S3_BUCKET",value=aws_s3_bucket.media.bucket},{name="MEDIA_PUBLIC_BASE_URL",value="https://${aws_cloudfront_distribution.media.domain_name}"},{name="AWS_REGION",value=var.aws_region},{name="AWS_DB_SECRET_ARN",value=aws_db_instance.main.master_user_secret[0].secret_arn},{name="DB_HOST",value=aws_db_instance.main.address},{name="DB_NAME",value=var.database_name},{name="DB_PORT",value="5432"},{name="REDIS_URL",value="rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:${aws_elasticache_replication_group.redis.port}"},{name="SMTP_HOST",value="smtp.gmail.com"},{name="SMTP_PORT",value="465"},{name="SMTP_SECURE",value="true"},{name="SMTP_FROM",value=var.smtp_from},{name="SMTP_FROM_NAME",value="gloomi"}],secrets=[{name="JWT_ACCESS_SECRET",valueFrom=var.jwt_access_secret_arn},{name="JWT_REFRESH_SECRET",valueFrom=var.jwt_refresh_secret_arn},{name="SMTP_USER",valueFrom=var.smtp_user_secret_arn},{name="SMTP_PASSWORD",valueFrom=var.smtp_password_secret_arn}],logConfiguration={logDriver="awslogs",options={"awslogs-group"=aws_cloudwatch_log_group.api.name,"awslogs-region"=var.aws_region,"awslogs-stream-prefix"="api"}}}])
+  container_definitions=jsonencode([{name="api",image=var.api_image,essential=true,portMappings=[{containerPort=3000,protocol="tcp"}],environment=[{name="NODE_ENV",value="production"},{name="WEB_ORIGIN",value=var.web_origin},{name="S3_BUCKET",value=aws_s3_bucket.media.bucket},{name="MEDIA_PUBLIC_BASE_URL",value="https://${aws_cloudfront_distribution.media.domain_name}"},{name="AWS_REGION",value=var.aws_region},{name="AWS_DB_SECRET_ARN",value=aws_db_instance.main.master_user_secret[0].secret_arn},{name="DB_HOST",value=aws_db_instance.main.address},{name="DB_NAME",value=var.database_name},{name="DB_PORT",value="5432"},{name="REDIS_URL",value="rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:${aws_elasticache_replication_group.redis.port}"},{name="SMTP_HOST",value="smtp.gmail.com"},{name="SMTP_PORT",value="465"},{name="SMTP_SECURE",value="true"},{name="SMTP_FROM",value=var.smtp_from},{name="SMTP_FROM_NAME",value="gloomi"}],secrets=[{name="JWT_ACCESS_SECRET",valueFrom=var.jwt_access_secret_arn},{name="JWT_REFRESH_SECRET",valueFrom=var.jwt_refresh_secret_arn},{name="SMTP_USER",valueFrom=var.smtp_user_secret_arn},{name="SMTP_PASSWORD",valueFrom=var.smtp_password_secret_arn},{name="EMAIL_CODE_PEPPER",valueFrom=var.email_code_pepper_secret_arn}],logConfiguration={logDriver="awslogs",options={"awslogs-group"=aws_cloudwatch_log_group.api.name,"awslogs-region"=var.aws_region,"awslogs-stream-prefix"="api"}}}])
   depends_on=[aws_iam_role_policy_attachment.execution, aws_iam_role_policy.execution_secrets]
 }
 resource "aws_ecs_service" "api" {
