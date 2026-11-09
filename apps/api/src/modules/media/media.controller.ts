@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { IsIn, IsInt, IsString, Max, Min, MinLength } from 'class-validator';
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -22,6 +22,10 @@ export class MediaController {
 
   @Post('uploads/:id/finalize') finalize(@Param('id') id: string, @Req() request: Request & { user: { sub: string } }) {
     return this.media.finalize(request.user.sub, id);
+  }
+
+  @Put('uploads/:id/content') content(@Param('id') id: string, @Req() request: Request & { user: { sub: string } }) {
+    return this.media.acceptLocalUpload(request.user.sub, id, request, request.headers['content-type'], request.headers['content-length']);
   }
 
   @Post('avatar') setAvatar(@Body() dto: SetAvatarDto, @Req() request: Request & { user: { sub: string } }) {

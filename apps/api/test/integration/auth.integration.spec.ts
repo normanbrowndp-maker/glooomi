@@ -9,8 +9,8 @@ import { RateLimitService } from '../../src/modules/auth/rate-limit.service';
 import { decryptEmailPayload } from '../../src/modules/mail/mail-crypto';
 import { EmailOutboxKind, VerificationPurpose } from '@prisma/client';
 import { EmailQueueService } from '../../src/modules/mail/email-queue.service';
-import { RateLimitService } from '../../src/modules/auth/rate-limit.service';
 import { HttpException } from '@nestjs/common';
+import { MailService } from '../../src/modules/mail/mail.service';
 import request from 'supertest';
 import type { Response as SupertestResponse } from 'supertest';
 import { randomUUID } from 'node:crypto';
@@ -24,6 +24,7 @@ process.env.JWT_ACCESS_SECRET = 'phase-two-test-access-secret-32-bytes';
 process.env.JWT_REFRESH_SECRET = 'phase-two-test-refresh-secret-32-bytes';
 process.env.EMAIL_CODE_PEPPER = 'phase-two-email-code-pepper-32-bytes';
 process.env.NODE_ENV = 'test';
+process.env.EMAIL_DELIVERY_MODE = 'queue';
 
 describe.skipIf(!testDatabaseUrl)('auth HTTP integration', () => {
   let app: INestApplication;
@@ -47,6 +48,8 @@ describe.skipIf(!testDatabaseUrl)('auth HTTP integration', () => {
     const userName = `p2_${emailPrefix.slice(-8).replaceAll('-', '_')}_${suffix}`.slice(0, 24);
     const response = await request(server()).post('/api/auth/register').send({ email: userEmail, username: userName, password: 'Correct horse battery 42!' });
     expect(response.status).toBe(201);
+    const send = await request(server()).post('/api/auth/resend-code').send({ email: userEmail });
+    expect(send.status).toBe(201);
     const user = await db.user.findUniqueOrThrow({ where: { email: userEmail } });
     return { user, email: userEmail, username: userName };
   };
@@ -61,6 +64,7 @@ describe.skipIf(!testDatabaseUrl)('auth HTTP integration', () => {
         AuthService,
         JwtAuthGuard,
         PrismaService,
+        { provide: MailService, useValue: { send: async () => { throw new Error('Queue integration must not send SMTP from AuthService'); } } },
         { provide: RateLimitService, useValue: { consume: async () => undefined } },
         { provide: (await import('../../src/modules/media/media.service')).MediaService, useValue: { presentProfile: async (profile: unknown) => profile } },
       ],

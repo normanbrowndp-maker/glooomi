@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { EmailOutboxKind, Prisma, VerificationPurpose } from '@prisma/client';
 import { createHash, createHmac, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -7,15 +7,22 @@ import { PrismaService } from '../database/prisma.service';
 import { encryptEmailPayload } from '../mail/mail-crypto';
 import { LoginDto, RegisterDto, VerifyDto } from './dto';
 import { decryptRefreshToken, encryptRefreshToken } from './session-crypto';
+import { MailService } from '../mail/mail.service';
+import { emailDeliveryMode } from '../mail/email-delivery-mode';
+
+type VerificationDelivery = { mode: 'queue'; expiresAt: Date } | { mode: 'direct'; email: string; code: string; messageId: string; purpose: VerificationPurpose; expiresAt: Date };
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const CODE_TTL_MS = 10 * 60_000;
 const RESEND_COOLDOWN_MS = 60_000;
 const REFRESH_RACE_GRACE_MS = 15_000;
+const verificationNextStep = () => ({ verificationRequired: true, delivery: 'not_requested', message: 'Продолжите подтверждение электронной почты или войдите в аккаунт.' });
+const resendMessage = 'Запрос принят. Если этот адрес ожидает подтверждения, проверьте почту и папку «Спам». Приём запроса не гарантирует доставку письма.';
+const invalidVerificationCode = () => new BadRequestException({ code: 'INVALID_VERIFICATION_CODE', message: 'Код неверен или срок его действия истёк. Используйте последний код подтверждения почты или запросите новый. Код восстановления пароля здесь не подходит.' });
 
 @Injectable()
 export class AuthService {
-  constructor(private db: PrismaService, private jwt: JwtService) {}
+  constructor(private db: PrismaService, private jwt: JwtService, private mail: MailService) {}
 
   createCsrfToken() {
     const nonce = randomBytes(32).toString('base64url');
@@ -40,22 +47,26 @@ export class AuthService {
   async register(input: RegisterDto) {
     const email = input.email.trim().toLowerCase();
     const username = input.username.trim().toLowerCase();
+    const existing = await this.db.user.findUnique({ where: { email }, select: { emailVerified: true } });
+    if (existing) return verificationNextStep();
     try {
       await this.db.$transaction(async tx => {
-        const user = await tx.user.create({ data: { email, username, passwordHash: await bcrypt.hash(input.password, 12), profile: { create: {} } }, select: { id: true, email: true } });
-        await this.createVerification(tx, user.id, user.email, VerificationPurpose.VERIFY);
+        await tx.user.create({ data: { email, username, passwordHash: await bcrypt.hash(input.password, 12), profile: { create: {} } }, select: { id: true } });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('Email or username is already in use');
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        if (await this.db.user.findUnique({ where: { email }, select: { id: true } })) return verificationNextStep();
+        throw new ConflictException('Не удалось завершить регистрацию. Проверьте данные или перейдите ко входу.');
+      }
       throw error;
     }
-    return { message: 'Check your email for the verification code' };
+    return verificationNextStep();
   }
 
   async login(input: LoginDto) {
     const user = await this.db.user.findUnique({ where: { email: input.email.trim().toLowerCase() } });
     if (!user || !(await bcrypt.compare(input.password, user.passwordHash))) throw new UnauthorizedException('Invalid email or password');
-    if (!user.emailVerified) throw new UnauthorizedException('Verify your email before signing in');
+    if (!user.emailVerified) throw new UnauthorizedException({ code: 'EMAIL_VERIFICATION_REQUIRED', verificationRequired: true, message: 'Подтвердите email: введите код из письма или запросите новый.' });
     return this.createSession(user.id, user.email);
   }
 
@@ -74,27 +85,36 @@ export class AuthService {
 
   async verify(input: VerifyDto) {
     const user = await this.db.user.findUnique({ where: { email: input.email.trim().toLowerCase() } });
-    if (!user) throw new BadRequestException('Invalid or expired code');
+    if (!user || user.emailVerified) throw invalidVerificationCode();
     const verified = await this.db.$transaction(async tx => {
       if (!await this.consumeVerificationWithClient(tx, user.id, input.code, VerificationPurpose.VERIFY)) return false;
       await tx.user.update({ where: { id: user.id }, data: { emailVerified: new Date() } });
       return true;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    if (!verified) throw new BadRequestException('Invalid or expired code');
+    if (!verified) throw invalidVerificationCode();
     return this.createSession(user.id, user.email);
   }
 
   async resend(emailInput: string) {
     const email = emailInput.trim().toLowerCase();
     const user = await this.db.user.findUnique({ where: { email } });
-    if (user && !user.emailVerified) await this.db.$transaction(tx => this.createVerification(tx, user.id, user.email, VerificationPurpose.VERIFY), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    return { message: 'If the account can receive a code, one has been sent' };
+    let expiresAt = new Date(Date.now() + CODE_TTL_MS);
+    if (user && !user.emailVerified) {
+      const delivery = await this.db.$transaction(tx => this.createVerification(tx, user.id, user.email, VerificationPurpose.VERIFY), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      await this.deliverVerification(delivery);
+      expiresAt = delivery.expiresAt;
+    }
+    // Same response shape for unknown, verified and unverified addresses.
+    return { message: resendMessage, retryAfterSeconds: RESEND_COOLDOWN_MS / 1000, expiresAt };
   }
 
   async requestPasswordReset(emailInput: string) {
     const user = await this.db.user.findUnique({ where: { email: emailInput.trim().toLowerCase() }, select: { id: true, email: true, emailVerified: true } });
-    if (user?.emailVerified) await this.db.$transaction(tx => this.createVerification(tx, user.id, user.email, VerificationPurpose.RESET_PASSWORD), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    return { message: 'If the account can receive a code, one has been sent' };
+    if (user?.emailVerified) {
+      const delivery = await this.db.$transaction(tx => this.createVerification(tx, user.id, user.email, VerificationPurpose.RESET_PASSWORD), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      await this.deliverVerification(delivery);
+    }
+    return { message: 'Запрос обработан. Если аккаунт может получить код, проверьте почту и папку «Спам».' };
   }
 
   async resetPassword(input: VerifyDto & { password: string }) {
@@ -112,20 +132,38 @@ export class AuthService {
     return { message: 'Password updated. Sign in with your new password.' };
   }
 
-  private async createVerification(tx: Prisma.TransactionClient, userId: string, email: string, purpose: VerificationPurpose) {
+  private async createVerification(tx: Prisma.TransactionClient, userId: string, email: string, purpose: VerificationPurpose): Promise<VerificationDelivery> {
     await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`);
-    const latest = await tx.verificationCode.findFirst({ where: { userId, purpose, invalidatedAt: null }, orderBy: { createdAt: 'desc' } });
-    if (latest && Date.now() - latest.createdAt.getTime() < RESEND_COOLDOWN_MS) return false;
+    const latest = await tx.verificationCode.findFirst({ where: { userId, purpose }, orderBy: { createdAt: 'desc' } });
+    if (latest && Date.now() - latest.createdAt.getTime() < RESEND_COOLDOWN_MS) {
+      throw new HttpException({ code: 'EMAIL_CODE_COOLDOWN', retryAfterSeconds: Math.ceil((RESEND_COOLDOWN_MS - (Date.now() - latest.createdAt.getTime())) / 1000), message: 'Подождите минуту перед повторной отправкой кода.' }, HttpStatus.TOO_MANY_REQUESTS);
+    }
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     await tx.verificationCode.updateMany({ where: { userId, purpose, invalidatedAt: null }, data: { invalidatedAt: new Date() } });
-    await tx.verificationCode.create({ data: { userId, purpose, codeHash: this.verificationHash(code), expiresAt: new Date(Date.now() + CODE_TTL_MS) } });
+    const expiresAt = new Date(Date.now() + CODE_TTL_MS);
+    await tx.verificationCode.create({ data: { userId, purpose, codeHash: this.verificationHash(code), expiresAt } });
     const outboxId = randomUUID();
+    if (emailDeliveryMode() === 'direct') return { mode: 'direct', email, code, messageId: outboxId, purpose, expiresAt };
     const encrypted = encryptEmailPayload({ to: email, code });
     await tx.emailOutbox.create({ data: {
       id: outboxId, userId, kind: purpose === VerificationPurpose.VERIFY ? EmailOutboxKind.VERIFY_EMAIL : EmailOutboxKind.RESET_PASSWORD,
       jobId: outboxId, payloadCiphertext: encrypted.ciphertext, payloadIv: encrypted.iv, payloadTag: encrypted.tag,
     } });
-    return true;
+    return { mode: 'queue', expiresAt };
+  }
+
+  private async deliverVerification(delivery: VerificationDelivery) {
+    if (delivery.mode === 'queue') return { delivery: 'queued', message: 'Запрос письма поставлен в очередь. Для отправки должны работать Redis и email worker.' };
+    try {
+      await this.mail.send(delivery.purpose === VerificationPurpose.VERIFY ? EmailOutboxKind.VERIFY_EMAIL : EmailOutboxKind.RESET_PASSWORD,
+        { to: delivery.email, code: delivery.code }, delivery.messageId);
+    } catch {
+      // Keep the account and code: a network timeout may happen after SMTP accepts
+      // the message. A retry after cooldown supersedes it without a duplicate user.
+      throw new ServiceUnavailableException({ code: 'EMAIL_DELIVERY_FAILED', verificationRequired: delivery.purpose === VerificationPurpose.VERIFY,
+        retryAfterSeconds: 60, message: 'Не удалось подтвердить приём письма сервером SMTP. Повторите запрос после указанной паузы. Если письмо всё же придёт, используйте код из него.' });
+    }
+    return { delivery: 'accepted', retryAfterSeconds: 60, message: 'SMTP принял письмо. Проверьте почту и папку «Спам»: приём сервером не гарантирует доставку во «Входящие».' };
   }
 
   private async consumeVerificationWithClient(tx: Prisma.TransactionClient, userId: string, value: string, purpose: VerificationPurpose) {

@@ -2,15 +2,17 @@ import { Injectable, OnModuleDestroy, ServiceUnavailableException } from '@nestj
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import type { Readable } from 'node:stream';
 
 export const MEDIA_STORAGE = Symbol('MEDIA_STORAGE');
 
 export type StoredObject = { contentType?: string; size?: number; prefix: Uint8Array };
 export interface MediaStorage {
-  createUpload(key: string, contentType: string, maxBytes: number): Promise<{ url: string; fields: Record<string, string> }>;
-  inspect(key: string): Promise<StoredObject>;
+  createUpload(key: string, contentType: string, maxBytes: number): Promise<{ url: string; fields: Record<string, string>; provider?: 'local' | 's3'; method?: 'PUT' | 'POST' }>;
+  inspect(key: string, contentType?: string): Promise<StoredObject>;
   readUrl(key: string, contentType: string): Promise<string>;
   remove(key: string): Promise<void>;
+  write?(key: string, source: Readable, contentType: string, sizeBytes: number): Promise<void>;
 }
 
 @Injectable()

@@ -1,14 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { BadRequestException } from '@nestjs/common';
 import { AuthService } from '../src/modules/auth/auth.service';
 import { PrismaService } from '../src/modules/database/prisma.service';
 import { decryptEmailPayload } from '../src/modules/mail/mail-crypto';
+import { MailService } from '../src/modules/mail/mail.service';
 
 const pepper = 'test-only-pepper-with-at-least-32-bytes';
 const digest = (code: string) => createHmac('sha256', pepper).update(code).digest('hex');
 
 describe('AuthService verification codes and sessions', () => {
+  afterEach(() => vi.unstubAllEnvs());
   let service: AuthService;
   let db: any;
   let tx: any;
@@ -32,7 +34,7 @@ describe('AuthService verification codes and sessions', () => {
       $transaction: vi.fn(async (callback: (client: any) => unknown) => callback(tx)),
     };
     jwt = { signAsync: vi.fn().mockResolvedValueOnce('signed-refresh-token').mockResolvedValueOnce('signed-access-token') };
-    service = new AuthService(db as PrismaService, jwt);
+    service = new AuthService(db as PrismaService, jwt, { send: vi.fn() } as unknown as MailService);
   });
 
   it('increments attempts for an incorrect code', async () => {
@@ -68,6 +70,7 @@ describe('AuthService verification codes and sessions', () => {
   });
 
   it('stores only encrypted recipient and verification code in the transactional outbox', async () => {
+    vi.stubEnv('EMAIL_DELIVERY_MODE', 'queue');
     tx.verificationCode.findFirst.mockResolvedValue(null);
     await service['createVerification'](tx, 'user-1', 'person@example.com', 'VERIFY' as any);
     const outbox = tx.emailOutbox.create.mock.calls[0][0].data;

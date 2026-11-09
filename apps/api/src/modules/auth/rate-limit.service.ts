@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Injectable, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import Redis from 'ioredis';
 import { createHmac } from 'node:crypto';
+import { localDirectEmail } from '../mail/email-delivery-mode';
 
 type Dimension = 'ip' | 'email' | 'user';
 type Limit = Partial<Record<Dimension, { max: number; windowMs: number }>>;
@@ -16,7 +17,7 @@ for i = 1, #KEYS do
   if count == 1 then redis.call('PEXPIRE', KEYS[i], tonumber(ARGV[(i - 1) * 2 + 2])) end
 end
 return 1`;
-const rateLimited = () => new HttpException('Too many requests. Try again later.', HttpStatus.TOO_MANY_REQUESTS);
+const rateLimited = (retryAfterSeconds: number) => new HttpException({ code: 'RATE_LIMITED', message: 'Слишком много запросов. Повторите попытку после указанной паузы.', retryAfterSeconds }, HttpStatus.TOO_MANY_REQUESTS);
 
 @Injectable()
 export class RateLimitService implements OnModuleInit, OnModuleDestroy {
@@ -24,6 +25,8 @@ export class RateLimitService implements OnModuleInit, OnModuleDestroy {
   private readonly local = new Map<string, { count: number; expiresAt: number }>();
 
   async onModuleInit() {
+    // A stale local REDIS_URL must not prevent SMTP-only development.
+    if (localDirectEmail()) return;
     const url = process.env.REDIS_URL;
     if (!url) {
       if (process.env.NODE_ENV === 'production') throw new Error('REDIS_URL is required for distributed auth rate limiting');
@@ -51,7 +54,7 @@ export class RateLimitService implements OnModuleInit, OnModuleDestroy {
       try {
         const args = entries.flatMap(({ rule }) => [rule.max, rule.windowMs]);
         const allowed = await this.redis.eval(INCREMENT_IF_ALL_ALLOWED, entries.length, ...entries.map(entry => entry.key), ...args.map(String));
-        if (Number(allowed) !== 1) throw rateLimited();
+        if (Number(allowed) !== 1) throw rateLimited(Math.max(1, ...entries.map(({ rule }) => Math.ceil(rule.windowMs / 1000))));
         return;
       } catch (error) {
         if (error instanceof HttpException && error.getStatus() === HttpStatus.TOO_MANY_REQUESTS) throw error;
@@ -61,7 +64,7 @@ export class RateLimitService implements OnModuleInit, OnModuleDestroy {
     if (process.env.NODE_ENV === 'production') throw new ServiceUnavailableException('Rate limit service is not configured');
     for (const { key, rule } of entries) {
       const bucket = this.local.get(key);
-      if (bucket && bucket.expiresAt > now && bucket.count >= rule.max) throw rateLimited();
+      if (bucket && bucket.expiresAt > now && bucket.count >= rule.max) throw rateLimited(Math.max(1, Math.ceil((bucket.expiresAt - now) / 1000)));
     }
     for (const { key, rule } of entries) {
       const bucket = this.local.get(key);

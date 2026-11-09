@@ -47,6 +47,15 @@ describe('private media upload validation', () => {
       expect(db.mediaAsset.create.mock.calls[0][0].data).toMatchObject({ ownerId: 'owner-1', objectKey: expect.stringMatching(/^private-media\//), purpose: MediaPurpose.POST });
       expect(storage.createUpload).toHaveBeenCalledWith(expect.stringMatching(/^private-media\//), 'image/png', 10 * 1024 * 1024);
     });
+    it('authenticates the owner and pending state before receiving local bytes', async () => {
+      storage.write = vi.fn();
+      db.mediaAsset.findFirst.mockResolvedValue(null);
+      await expect(service.acceptLocalUpload('other-user', 'media-1', {} as any, 'image/png', '8')).rejects.toMatchObject({ status: 404 });
+      expect(storage.write).not.toHaveBeenCalled();
+      db.mediaAsset.findFirst.mockResolvedValue({ objectKey: 'private-media/key', contentType: 'image/png', sizeBytes: 8, status: MediaStatus.ATTACHED, uploadUntil: new Date(Date.now() + 60000) });
+      await expect(service.acceptLocalUpload('owner', 'media-1', {} as any, 'image/png', '8')).rejects.toMatchObject({ status: 400 });
+      expect(storage.write).not.toHaveBeenCalled();
+    });
 
     it('finalizes only a matching object signature and exact size', async () => {
       db.mediaAsset.findFirst.mockResolvedValue({ id: 'media-1', ownerId: 'owner-1', objectKey: 'private-media/key', mediaType: MediaType.IMAGE, contentType: 'image/png', sizeBytes: 8, status: MediaStatus.PENDING, uploadUntil: new Date(Date.now() + 60_000) });

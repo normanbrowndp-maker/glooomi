@@ -5,6 +5,7 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 import { LoginDto, PasswordResetConfirmDto, PasswordResetDto, RegisterDto, ResendDto, VerifyDto } from './dto';
 import { RateLimitService } from './rate-limit.service';
 import { MediaService } from '../media/media.service';
+import { webOrigins } from './web-origins';
 
 const HOUR = 60 * 60_000;
 
@@ -22,7 +23,7 @@ export class AuthController {
   private assertOrigin(request: Request) {
     const origin = request.headers.origin;
     if (!origin) return;
-    const allowed = process.env.WEB_ORIGIN?.split(',').map(value => value.trim()).filter(Boolean) ?? ['http://localhost:5173'];
+    const allowed = webOrigins();
     if (!allowed.includes(origin)) throw new ForbiddenException('Origin is not allowed');
   }
 

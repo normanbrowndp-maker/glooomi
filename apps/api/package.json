@@ -11,7 +11,7 @@
     "start:worker": "node dist/worker.js",
     "lint": "tsc --noEmit -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
+    "test": "vitest run --exclude test/integration/**",
     "test:integration": "node scripts/run-integration-tests.mjs",
     "test:migrations": "node scripts/run-migration-tests.mjs"
   },

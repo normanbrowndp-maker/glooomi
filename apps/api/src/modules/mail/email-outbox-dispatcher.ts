@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { EmailOutboxStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { EmailQueueService } from './email-queue.service';
+import { emailDeliveryMode } from './email-delivery-mode';
 
 const BATCH_SIZE = 50;
 const MAX_ATTEMPTS = 5;
@@ -17,6 +18,7 @@ export class EmailOutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   constructor(private db: PrismaService, private queue: EmailQueueService) {}
 
   onModuleInit() {
+    if (emailDeliveryMode() === 'direct') return;
     this.timer = setInterval(() => void this.dispatch(), 2_000);
     this.timer.unref();
     void this.dispatch();
@@ -25,7 +27,7 @@ export class EmailOutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
 
   async dispatch() {
-    if (this.dispatching || !process.env.REDIS_URL) return;
+    if (emailDeliveryMode() === 'direct' || this.dispatching || !process.env.REDIS_URL) return;
     this.dispatching = true;
     const now = new Date();
     const expiredLease = new Date(now.getTime() - LEASE_MS);

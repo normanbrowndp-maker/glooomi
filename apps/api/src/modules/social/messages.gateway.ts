@@ -2,7 +2,8 @@ import { ConnectedSocket, MessageBody, SubscribeMessage, WebSocketGateway, WebSo
 import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../database/prisma.service';
-@WebSocketGateway({ namespace: '/messages', cors: { origin: process.env.WEB_ORIGIN?.split(',') ?? 'http://localhost:5173', credentials: true } })
+import { webOrigins } from '../auth/web-origins';
+@WebSocketGateway({ namespace: '/messages', cors: { origin: (origin: string | undefined, callback: (error: Error | null, allowed?: boolean) => void) => { if (!origin || webOrigins().includes(origin)) callback(null, true); else callback(new Error('Origin is not allowed')); }, credentials: true } })
 export class MessagesGateway {
   @WebSocketServer() server!: Server;
   constructor(private jwt: JwtService, private db: PrismaService) {}

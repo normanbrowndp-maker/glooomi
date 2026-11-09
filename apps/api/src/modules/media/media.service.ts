@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { MediaPurpose, MediaStatus, MediaType, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
+import type { Readable } from 'node:stream';
 import { PrismaService } from '../database/prisma.service';
 import { MEDIA_STORAGE, matchesMediaSignature, MediaStorage } from './storage';
 
@@ -21,6 +22,7 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly db: PrismaService, @Inject(MEDIA_STORAGE) private readonly storage: MediaStorage) {}
 
   onModuleInit() {
+    if (process.env.MEDIA_CLEANUP_ENABLED === 'false') return;
     this.cleanupTimer = setInterval(() => void this.cleanupExpired(), 60 * 60_000);
     this.cleanupTimer.unref();
     void this.cleanupExpired();
@@ -40,11 +42,27 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
     } });
     try {
       const signed = await this.storage.createUpload(asset.objectKey, contentType, maxBytes);
-      return { mediaId: asset.id, uploadUrl: signed.url, fields: signed.fields, expiresIn: 300 };
+      return { mediaId: asset.id, uploadUrl: signed.provider === 'local' ? `/media/uploads/${asset.id}/content` : signed.url, fields: signed.fields, provider: signed.provider || 's3', method: signed.method || 'POST', expiresIn: 300 };
     } catch (error) {
       await this.db.mediaAsset.updateMany({ where: { id: asset.id, status: MediaStatus.PENDING }, data: { status: MediaStatus.FAILED } });
       throw error;
     }
+  }
+
+  async acceptLocalUpload(ownerId: string, mediaId: string, source: Readable, contentType?: string, length?: string) {
+    if (!this.storage.write) throw new BadRequestException('Этот способ загрузки недоступен для выбранного хранилища.');
+    const asset = await this.db.mediaAsset.findFirst({ where: { id: mediaId, ownerId } });
+    if (!asset) throw new NotFoundException('Загрузка не найдена.');
+    if (asset.status !== MediaStatus.PENDING || asset.uploadUntil <= new Date()) throw new BadRequestException('Загрузка уже завершена или истёк её срок.');
+    if (contentType?.split(';')[0] !== asset.contentType || (length && Number(length) !== asset.sizeBytes)) throw new BadRequestException('Тип или размер файла не соответствует выбранному.');
+    await this.storage.write(asset.objectKey, source, asset.contentType, asset.sizeBytes);
+    return { mediaId: asset.id, uploaded: true };
+  }
+
+  async localReadAsset(objectKey: string) {
+    const asset = await this.db.mediaAsset.findUnique({ where: { objectKey }, select: { contentType: true, status: true, uploadUntil: true, story: { select: { expiresAt: true } } } });
+    if (!asset || ![MediaStatus.READY, MediaStatus.ATTACHED].includes(asset.status as 'READY' | 'ATTACHED') || (asset.status === MediaStatus.READY && asset.uploadUntil <= new Date()) || (asset.story && asset.story.expiresAt <= new Date())) throw new NotFoundException('Файл недоступен.');
+    return asset;
   }
 
   async finalize(ownerId: string, mediaId: string) {
@@ -54,7 +72,7 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
     if (asset.status !== MediaStatus.PENDING || asset.uploadUntil <= new Date()) throw new BadRequestException('Upload has expired or is no longer available.');
 
     let verified: Awaited<ReturnType<MediaStorage['inspect']>>;
-    try { verified = await this.storage.inspect(asset.objectKey); }
+    try { verified = await this.storage.inspect(asset.objectKey, asset.contentType); }
     catch (error) { throw error; }
     if (verified.size !== asset.sizeBytes || verified.contentType !== asset.contentType || !matchesMediaSignature(asset.contentType, verified.prefix)) {
       await this.rejectUpload(asset.id, asset.objectKey);

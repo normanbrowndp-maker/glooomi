@@ -1,0 +1,9 @@
+import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+export type User = { id: string; email: string; username: string; profile?: { displayName: string; bio: string; avatarUrl?: string; website?: string; visibility: string } };
+export function Avatar({name,src,size=40,ring=false}:{name:string;src?:string;size?:number;ring?:boolean}){return <span className={`avatar ${ring?'ring':''}`} style={{width:size,height:size}}>{src?<img src={src} alt="" loading="lazy"/>:<b aria-hidden="true">{name[0]?.toUpperCase()}</b>}</span>}
+export function EmptyState({icon,title,children,link,label}:{icon?:ReactNode;title:string;children:ReactNode;link?:string;label?:string}){return <div className="empty-state">{icon&&<span className="empty-icon">{icon}</span>}<h2>{title}</h2><p>{children}</p>{link&&<Link className="primary" to={link}>{label}</Link>}</div>}
+export function ErrorState({retry}:{retry:()=>void}){return <div className="empty-state" role="alert"><h2>Не удалось загрузить данные</h2><p>Проверьте соединение и попробуйте ещё раз.</p><button className="secondary" onClick={retry}>Повторить</button></div>}
+export function Skeleton(){return <div className="content-skeleton" aria-label="Загрузка"><i/><span/><div/><span/><span/></div>}
+export function PageHeading({eyebrow,title,children}:{eyebrow?:string;title:string;children?:ReactNode}){return <header className="section-heading"><div>{eyebrow&&<span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1></div>{children}</header>}
+export function timeAgo(date:string){const seconds=Math.max(0,(Date.now()-new Date(date).getTime())/1000);return seconds<60?'только что':seconds<3600?`${Math.floor(seconds/60)} мин`:seconds<86400?`${Math.floor(seconds/3600)} ч`:new Date(date).toLocaleDateString('ru-RU',{day:'numeric',month:'short'})}

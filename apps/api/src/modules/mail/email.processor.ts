@@ -6,6 +6,7 @@ import { decryptEmailPayload } from './mail-crypto';
 import { EmailJob, EMAIL_QUEUE_NAME } from './email-queue.service';
 import { MailService } from './mail.service';
 import { redisConnectionOptions } from './redis-connection';
+import { emailDeliveryMode } from './email-delivery-mode';
 
 const MAX_ATTEMPTS = 5;
 
@@ -17,6 +18,10 @@ export class EmailProcessor implements OnModuleInit, OnModuleDestroy {
   constructor(private db: PrismaService, private mail: MailService) {}
 
   async onModuleInit() {
+    if (emailDeliveryMode() === 'direct') {
+      this.logger.log('Direct email delivery is active; no email worker is required');
+      return;
+    }
     const connection = redisConnectionOptions();
     if (!connection) throw new Error('REDIS_URL is required to start the email worker');
     this.worker = new Worker<EmailJob>(EMAIL_QUEUE_NAME, job => this.process(job), { connection, concurrency: 4, autorun: true });

@@ -1,16 +1,16 @@
 # GLOOMI architecture
 
-Updated 2026-11-09. Describes the local implementation; external services have not been provisioned or verified.
+Updated 2026-11-10. Describes local implementation. No cloud resources were provisioned; Gmail authentication and read-only existing-database diagnostics were verified separately from isolated integration tests.
 
 ## Runtime
 
 - Browser: React/Vite. The short-lived access JWT is held in memory. Refresh state uses an HttpOnly cookie scoped to `/api/auth`; refresh/logout also require the CSRF token in `X-CSRF-Token`.
 - API: NestJS REST and Socket.IO, Prisma 6, PostgreSQL, Redis/BullMQ, Nodemailer, AWS SDK for S3.
 - Database target: Neon PostgreSQL. The API reads `DATABASE_URL`, normally the Neon pooled connection string. Prisma CLI config (`prisma.config.ts`) reads `DIRECT_URL` for direct migration connections and falls back to `DATABASE_URL`. For local Docker PostgreSQL, both can point to the same local database. `DIRECT_URL` is optional when the supplied `DATABASE_URL` is suitable for migrations.
-- Local services: Docker Compose PostgreSQL, Redis, Mailpit, and separate test databases. No Neon project or database is created by this repository.
-- Email: API writes encrypted transactional outbox rows in the same business transaction as verification state and dispatches only opaque IDs to BullMQ. A separate Nest application context processes the queue. Mailpit is for local capture; Gmail SMTP uses an App Password.
-- Abuse controls: Redis-backed fixed-window counters apply operation limits across API instances. Production requires Redis; local development may use the configured local fallback.
-- Media: the API persists owner, purpose, type, declared size, object key, and lifecycle state before issuing an exact-key presigned S3 POST. Browser sends bytes directly to S3, then calls finalize. The API verifies S3 metadata and a file signature before allowing attachment. Authorized API responses contain short-lived S3 signed GET URLs.
+- Local services: the configured PostgreSQL database and direct Gmail SMTP are sufficient. Private filesystem media is the development default. The real integration suite uses a disposable standalone PostgreSQL under `.cache`, without Docker or Redis. Docker Compose remains a legacy optional configuration. No Neon project or database is created by the application.
+- Email: outside production, direct SMTP is the default. Registration creates the account without sending mail; the explicit verification request creates a hashed code and then awaits Gmail SMTP using an App Password, without Redis or an email worker. Optional `EMAIL_DELIVERY_MODE=queue` retains the encrypted transactional outbox, BullMQ dispatcher and separate worker. SMTP acceptance does not guarantee Inbox delivery. See [email setup](email-setup.md).
+- Abuse controls: production requires Redis-backed fixed-window counters across API instances. Local direct SMTP mode uses process-memory counters and never connects to Redis. Code attempts, expiry, consumption and resend cooldown remain in PostgreSQL in both modes.
+- Media: owner, purpose, type, exact size, object key and lifecycle state remain in PostgreSQL. Development selects local storage: an authenticated bounded raw PUT streams to a private UUID file, finalize verifies its bytes, and attachment is atomic. Read capabilities expire after five minutes and video supports Range. Optional S3 mode retains presigned POST/finalize/signed GET. See [local media](local-media.md).
 - AWS: S3 is the intended cloud media service. Existing Terraform still describes an older RDS/CloudFront/ECS stack and is not the target architecture. It remains un-applied and may incur charges if provisioned; it needs redesign before use with Neon.
 
 ## Data and media lifecycle
